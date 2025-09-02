@@ -39,6 +39,7 @@ func New(client *redis.Client, key string, expiration time.Duration, opts ...Opt
 		expiration:    expiration,
 		renewInterval: expiration / 2,
 		ctx:           context.Background(),
+		stopRenew:     make(chan struct{}, 1),
 	}
 
 	// 应用可选参数
@@ -78,9 +79,7 @@ func (r *RedisDistLock) LockWithCtx(ctx context.Context) (bool, error) {
 		}
 		if ok {
 			// 获取成功，启动看门狗
-			r.stopRenew = make(chan struct{})
 			go r.renew(ctx)
-
 			if r.isReentrant {
 				r.holdingGoroutine = getGoroutineID()
 				r.reentrantCount = 1
@@ -121,7 +120,7 @@ func (r *RedisDistLock) UnlockWithCtx(ctx context.Context) error {
 	}
 
 	// 停止看门狗
-	close(r.stopRenew)
+	r.stopRenew <- struct{}{}
 
 	// Lua 脚本释放锁
 	script := `

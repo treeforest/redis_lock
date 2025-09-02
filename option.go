@@ -41,6 +41,9 @@ func WithContext(ctx context.Context) Option {
 // WithValue 自定义锁的唯一值（默认 UUID）
 func WithValue(value string) Option {
 	return func(r *RedisDistLock) {
+		if value == "" {
+            panic("lock value cannot be empty")
+        }
 		r.value = value
 	}
 }

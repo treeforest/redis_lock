@@ -1,4 +1,3 @@
-// redis_lock/example_test.go
 package redis_lock
 
 import (
@@ -209,7 +208,7 @@ func TestLock_ExpiryScenarios(t *testing.T) {
         lock := New(rdb, "wd_stop", 2*time.Second, WithRenewInterval(1*time.Second))
         ok, _ := lock.Lock()
         assert.True(t, ok)
-        close(lock.stopRenew) // 手动停止
+		lock.stopRenew <- struct{}{} // 手动停止
         time.Sleep(3 * time.Second)
         _, err := rdb.Get(context.Background(), "wd_stop").Result()
         assert.Equal(t, redis.Nil, err) // ✅ 锁已过期
@@ -220,7 +219,7 @@ func TestLock_ExpiryScenarios(t *testing.T) {
         lock := New(rdb, "reacquire", 2*time.Second)
         ok, _ := lock.Lock()
         assert.True(t, ok)
-        close(lock.stopRenew)
+		lock.stopRenew <- struct{}{} // 手动停止
         time.Sleep(3 * time.Second)
         ok, _ = lock.Lock()
         assert.True(t, ok, "应能重新获取过期锁")
