@@ -10,9 +10,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+)
+
+var (
+    ErrLockNotHeld   = errors.New("lock not held or already released")
 )
 
 type RedisDistLock struct {
@@ -39,7 +44,6 @@ func New(client *redis.Client, key string, expiration time.Duration, opts ...Opt
 		expiration:    expiration,
 		renewInterval: expiration / 2,
 		ctx:           context.Background(),
-		stopRenew:     make(chan struct{}, 1),
 	}
 
 	// 应用可选参数
@@ -79,7 +83,8 @@ func (r *RedisDistLock) LockWithCtx(ctx context.Context) (bool, error) {
 		}
 		if ok {
 			// 获取成功，启动看门狗
-			go r.renew(ctx)
+			r.stopRenew = make(chan struct{}, 1)
+			go r.renew(ctx, r.stopRenew, r.key, r.expiration, r.renewInterval)
 			if r.isReentrant {
 				r.holdingGoroutine = getGoroutineID()
 				r.reentrantCount = 1
@@ -113,6 +118,9 @@ func (r *RedisDistLock) UnlockWithCtx(ctx context.Context) error {
 
 	// 可重入：减少计数
 	if r.isReentrant && r.holdingGoroutine == getGoroutineID() {
+		if r.reentrantCount == 0 {
+			return ErrLockNotHeld
+		}
 		r.reentrantCount--
 		if r.reentrantCount > 0 {
 			return nil // 未完全释放
@@ -120,7 +128,11 @@ func (r *RedisDistLock) UnlockWithCtx(ctx context.Context) error {
 	}
 
 	// 停止看门狗
-	r.stopRenew <- struct{}{}
+	if r.stopRenew == nil {
+		return ErrLockNotHeld
+	}
+	close(r.stopRenew) // 关闭通道（触发 renew 协程退出）
+	r.stopRenew = nil
 
 	// Lua 脚本释放锁
 	script := `
@@ -135,25 +147,25 @@ func (r *RedisDistLock) UnlockWithCtx(ctx context.Context) error {
 		return err
 	}
 	if res == 0 {
-		return fmt.Errorf("lock not held or already released")
+		return ErrLockNotHeld
 	}
 	return nil
 }
 
 // renew 看门狗自动续期
-func (r *RedisDistLock) renew(ctx context.Context) {
-	ticker := time.NewTicker(r.renewInterval)
+func (r *RedisDistLock) renew(ctx context.Context, stopCh chan struct{}, key string, expiration, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			_, err := r.client.Expire(ctx, r.key, r.expiration).Result()
+			_, err := r.client.Expire(ctx, key, expiration).Result()
 			if err != nil {
 				log.Printf("failed to renew lock %s: %v", r.key, err)
 				return
 			}
-		case <-r.stopRenew:
+		case <-stopCh:
 			return
 		case <-ctx.Done():
 			return

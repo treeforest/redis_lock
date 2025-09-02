@@ -306,3 +306,18 @@ func TestLock_MultipleKeys(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestUnlock_Released(t *testing.T) {
+    rdb := newTestClient(t)
+    lock := New(rdb, "test_lock", 5*time.Second)
+
+    // 第一次释放锁
+    ok, err := lock.Lock()
+    assert.NoError(t, err)
+    assert.True(t, ok)
+    assert.NoError(t, lock.Unlock())
+
+    // 第二次释放锁（应快速返回 ErrLockReleased）
+    err = lock.Unlock()
+    assert.Equal(t, ErrLockNotHeld, err)
+}
